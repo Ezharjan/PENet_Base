@@ -7,19 +7,21 @@ import torch.optim
 import torch.utils.data
 import time
 
-from dataloaders.kitti_loader import load_calib, input_options, KittiDepth
+from dataloaders.kitti_loader4 import load_calib, input_options, KittiDepth
+from dataloaders.nyu_loader import NYU
 from metrics import AverageMeter, Result
 import criteria
 import helper
 import vis_utils
 
-from model3 import ENet
-from model import PENet_C1_train
-from model import PENet_C2_train
-#from model import PENet_C4_train (Not Implemented)
-from model import PENet_C1
-from model import PENet_C2
-from model import PENet_C4
+from model4 import ECLNet
+from model4 import PECLNet, PECLNet_train
+# from model import PENet_C1_train
+# from model import PENet_C2_train
+# #from model import PENet_C4_train (Not Implemented)
+# from model import PENet_C1
+# from model import PENet_C2
+# from model import PENet_C4
 
 parser = argparse.ArgumentParser(description='Sparse-to-Dense')
 parser.add_argument('-n',
@@ -35,7 +37,7 @@ parser.add_argument('--workers',
                     metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs',
-                    default=40,
+                    default=60,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run (default: 100)')
@@ -151,14 +153,20 @@ parser.add_argument('-co', '--convolutional-layer-encoding', default="xyz", type
 parser.add_argument('-d', '--dilation-rate', default="2", type=int,
                     choices=[1, 2, 4],
                     help='CSPN++ dilation rate')
+parser.add_argument('--data', default='kitti', type=str,choices=['kitti', 'nyu'],
+                    help='choose a dataset: kitti or nyu')
 
 args = parser.parse_args()
 args.result = os.path.join('..', 'results')
+args.nyu_json = 'dataloaders/nyu.json'
+args.dir_nyu = '../nyudepthv2/'
 args.use_rgb = ('rgb' in args.input)
 args.use_d = 'd' in args.input
 args.use_g = 'g' in args.input
 args.val_h = 352
 args.val_w = 1216
+args.part =50
+args.modal_missing_rate = 0.2
 print(args)
 
 cuda = torch.cuda.is_available() and not args.cpu
@@ -170,9 +178,18 @@ else:
     device = torch.device("cpu")
 print("=> using '{}' for computation.".format(device))
 
+if args.data == 'kitti':
+    dataLoad = KittiDepth
+elif args.data == 'nyu':
+    dataLoad = NYU
+
 # define loss functions
-depth_criterion = criteria.MaskedMSELoss() if (
-    args.criterion == 'l2') else criteria.MaskedL1Loss()
+depth_criterion = criteria.Huber_Combine() 
+# cl_criterion = criteria.info_nce_loss_depth_maps() 
+MaskedMSELoss = criteria.MaskedMSELoss()
+
+scaler = torch.cuda.amp.GradScaler()  #
+ConsineSimilarity = torch.nn.CosineSimilarity(dim=1).cuda()
 
 #multi batch
 multi_batch_size = 1
@@ -195,12 +212,27 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         lr = 0
 
     torch.cuda.empty_cache()
+    total_batches = len(loader)
+    stop_k = 1
+    if epoch in range(0, 2):
+        stop_k = 0.6
+    elif epoch in range(2, 4):
+        stop_k = 0.7
+    elif epoch in range(4, 6):
+        stop_k = 0.8
+    elif epoch in range(6, 8):
+        stop_k = 0.9
+    else:
+        stop_k = 1
     for i, batch_data in enumerate(loader):
+        if i >= stop_k * total_batches:
+            print("Reach the limit of {} total data, break training".format(stop_k))
+            break
         dstart = time.time()
         batch_data = {
             key: val.to(device)
             for key, val in batch_data.items() if val is not None
-        }
+        }            
 
         gt = batch_data[
             'gt'] if mode != 'test_prediction' and mode != 'test_completion' else None
@@ -217,7 +249,8 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         #'''
         if(args.network_model == 'e'):
             start = time.time()
-            st1_pred, st2_pred, pred = model(batch_data)
+            with torch.cuda.amp.autocast():
+                output1, output2, pred = model(batch_data) # z, p1, p2
         else:
             start = time.time()
             pred = model(batch_data)
@@ -229,35 +262,39 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         depth_loss, photometric_loss, smooth_loss, mask = 0, 0, 0, None
 
         # inter loss_param
-        st1_loss, st2_loss, loss = 0, 0, 0
-        w_st1, w_st2 = 0, 0
-        round1, round2, round3 = 1, 3, None
-        if(actual_epoch <= round1):
-            w_st1, w_st2 = 0.2, 0.2
-        elif(actual_epoch <= round2):
-            w_st1, w_st2 = 0.05, 0.05
-        else:
-            w_st1, w_st2 = 0, 0
+        cl_loss, loss = 0, 0
+
+        # round1, round2, round3 = 0, 0, None   # 1, 3, None
+        # if(actual_epoch <= round1):
+        #     w_st1, w_st2 = 0.2, 0.2
+        # elif(actual_epoch <= round2):
+        #     w_st1, w_st2 = 0.05, 0.05
+        # else:
+        #     w_st1, w_st2 = 0, 0
+
 
         if mode == 'train':
             # Loss 1: the direct depth supervision from ground truth label
             # mask=1 indicates that a pixel does not ground truth labels
-            depth_loss = depth_criterion(pred, gt)
-
             if args.network_model == 'e':
-                st1_loss = depth_criterion(st1_pred, gt)
-                st2_loss = depth_criterion(st2_pred, gt)
-                loss = (1 - w_st1 - w_st2) * depth_loss + w_st1 * st1_loss + w_st2 * st2_loss
-            else:
-                loss = depth_loss
+                l1 = 0.8
+                l2 = 1-l1
+                cl_loss = (MaskedMSELoss(pred, output1.detach()).mean() + MaskedMSELoss(pred, output2.detach()).mean()) * 0.5
+                depth_loss = depth_criterion(pred, gt)
+                Loss = l1* depth_loss + l2* cl_loss
+                scaler.scale(Loss).backward()
 
-            if i % multi_batch_size == 0:
+                #optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
-            loss.backward()
-
-            if i % multi_batch_size == (multi_batch_size-1) or i==(len(loader)-1):
+                print("depth_loss:", depth_loss, "cl_loss:",cl_loss ,"epoch:", epoch, " ", i, "/", len(loader) )
+            else:
+                depth_loss = MaskedMSELoss(pred, gt)
+                depth_loss.backward()
                 optimizer.step()
-            print("loss:", loss, " epoch:", epoch, " ", i, "/", len(loader))
+                optimizer.zero_grad()
+                print("PEdepth_loss:", depth_loss, "epoch:", epoch, " ", i, "/", len(loader) )
 
         if mode == "test_completion":
             str_i = str(i)
@@ -335,26 +372,14 @@ def main():
     model = None
     penet_accelerated = False
     if (args.network_model == 'e'):
-        model = ENet(args).to(device)
-    elif (is_eval == False):
-        if (args.dilation_rate == 1):
-            model = PENet_C1_train(args).to(device)
-        elif (args.dilation_rate == 2):
-            model = PENet_C2_train(args).to(device)
-        elif (args.dilation_rate == 4):
-            model = PENet_C4(args).to(device)
+        model = ECLNet(args).to(device)
+    if (args.network_model == 'pe'):
+        if (is_eval == False):
+            model = PECLNet_train(args).to(device)
+        else:
+            model = PECLNet(args).to(device)
             penet_accelerated = True
-    else:
-        if (args.dilation_rate == 1):
-            model = PENet_C1(args).to(device)
-            penet_accelerated = True
-        elif (args.dilation_rate == 2):
-            model = PENet_C2(args).to(device)
-            penet_accelerated = True
-        elif (args.dilation_rate == 4):
-            model = PENet_C4(args).to(device)
-            penet_accelerated = True
-
+    
     if (penet_accelerated == True):
         model.encoder3.requires_grad = False
         model.encoder5.requires_grad = False
@@ -383,7 +408,7 @@ def main():
     test_dataset = None
     test_loader = None
     if (args.test):
-        test_dataset = KittiDepth('test_completion', args)
+        test_dataset = dataLoad('test_completion', args)
         test_loader = torch.utils.data.DataLoader(
             test_dataset,
             batch_size=1,
@@ -393,7 +418,7 @@ def main():
         iterate("test_completion", args, test_loader, model, None, logger, 0)
         return
 
-    val_dataset = KittiDepth('val', args)
+    val_dataset = dataLoad('val', args)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=1,
@@ -439,7 +464,7 @@ def main():
     # Data loading code
     print("=> creating data loaders ... ")
     if not is_eval:
-        train_dataset = KittiDepth('train', args)
+        train_dataset = dataLoad('train', args)
         train_loader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=args.batch_size,
                                                    shuffle=True,
@@ -463,10 +488,6 @@ def main():
         if (args.freeze_backbone == True):
             for p in model.module.backbone.parameters():
                 p.requires_grad = False
-        if (penet_accelerated == True):
-            model.module.encoder3.requires_grad = False
-            model.module.encoder5.requires_grad = False
-            model.module.encoder7.requires_grad = False
 
         helper.save_checkpoint({ # save checkpoint
             'epoch': epoch,

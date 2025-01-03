@@ -1,5 +1,8 @@
 import argparse
 import os
+import copy
+import random
+import numpy
 
 import torch
 import torch.nn.parallel
@@ -7,13 +10,13 @@ import torch.optim
 import torch.utils.data
 import time
 
-from dataloaders.kitti_loader import load_calib, input_options, KittiDepth
+from dataloaders.kitti_loader2 import load_calib, input_options, KittiDepth
 from metrics import AverageMeter, Result
 import criteria
 import helper
 import vis_utils
 
-from model3 import ENet
+from model import ENet
 from model import PENet_C1_train
 from model import PENet_C2_train
 #from model import PENet_C4_train (Not Implemented)
@@ -35,7 +38,7 @@ parser.add_argument('--workers',
                     metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs',
-                    default=40,
+                    default=100,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run (default: 100)')
@@ -171,8 +174,7 @@ else:
 print("=> using '{}' for computation.".format(device))
 
 # define loss functions
-depth_criterion = criteria.MaskedMSELoss() if (
-    args.criterion == 'l2') else criteria.MaskedL1Loss()
+depth_criterion = criteria.HuberLoss() 
 
 #multi batch
 multi_batch_size = 1
@@ -200,7 +202,7 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         batch_data = {
             key: val.to(device)
             for key, val in batch_data.items() if val is not None
-        }
+        }             
 
         gt = batch_data[
             'gt'] if mode != 'test_prediction' and mode != 'test_completion' else None
@@ -231,7 +233,7 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         # inter loss_param
         st1_loss, st2_loss, loss = 0, 0, 0
         w_st1, w_st2 = 0, 0
-        round1, round2, round3 = 1, 3, None
+        round1, round2, round3 = 0, 0, None   # 1, 3, None
         if(actual_epoch <= round1):
             w_st1, w_st2 = 0.2, 0.2
         elif(actual_epoch <= round2):
@@ -293,18 +295,57 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
 
     return avg, is_best
 
+def average_weight(w):
+    length=[]
+    for i in w:
+        tmp_len = len(i)
+        length.append(tmp_len)
+    max_value = max(length)
+    max_index = length.index(max_value)
+    w_avg = copy.deepcopy(w[max_index])
+    for key in w_avg.keys():
+        count =1
+        for i in range(0, len(w)):
+            if i==max_index:
+                continue
+            if key in w[i]:
+                w_avg[key] += w[i][key]
+                count = count + 1
+        w_avg[key] = torch.div(w_avg[key],count)
+    return w_avg
+
+def random_lost():
+    a = False
+    b = False
+    lst = [True, False]
+    arr = numpy.array(lst)
+    a, b = numpy.random.choice(arr,2,replace=False)
+    return a, b
+
+
+# simulate modal missing
+args.d_lost = False
+args.rgb_lost = False  
+
 def main():
     global args
+    # global d_lost
+    # global rgb_lost
+    
     checkpoint = None
     is_eval = False
+    parts_idx = range(1,51)
+    global_weights =[]
+
+
     if args.evaluate:
         args_new = args
         if os.path.isfile(args.evaluate):
             print("=> loading checkpoint '{}' ... ".format(args.evaluate),
-                  end='')
+                end='')
             checkpoint = torch.load(args.evaluate, map_location=device)
-            #args = checkpoint['args']
-            args.start_epoch = checkpoint['epoch'] + 1
+            # args = checkpoint['args']
+            # args.start_epoch = checkpoint['epoch'] + 1
             args.data_folder = args_new.data_folder
             args.val = args_new.val
             is_eval = True
@@ -315,84 +356,39 @@ def main():
             print("No model found at '{}'".format(args.evaluate))
             #return
 
-    elif args.resume:  # optionally resume from a checkpoint
-        args_new = args
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}' ... ".format(args.resume),
-                  end='')
-            checkpoint = torch.load(args.resume, map_location=device)
+    if args.resume:  # optionally resume from a checkpoint
+            args_new = args
+            if os.path.isfile(args.resume):
+                print("=> loading checkpoint '{}' ... ".format(args.resume),
+                    end='')
+                checkpoint = torch.load(args.resume, map_location=device)
+                global_weights = checkpoint['model']
+                
+                args.start_epoch = checkpoint['epoch'] + 1
+                args.data_folder = args_new.data_folder
+                args.val = args_new.val
+                
+                print("Completed. Resuming from epoch {}.".format(
+                    checkpoint['epoch']))
+            else:
+                print("No checkpoint found at '{}'".format(args.resume))
+                return
 
-            args.start_epoch = checkpoint['epoch'] + 1
-            args.data_folder = args_new.data_folder
-            args.val = args_new.val
-            print("Completed. Resuming from epoch {}.".format(
-                checkpoint['epoch']))
-        else:
-            print("No checkpoint found at '{}'".format(args.resume))
-            return
-
-    print("=> creating model and optimizer ... ", end='')
-    model = None
-    penet_accelerated = False
-    if (args.network_model == 'e'):
-        model = ENet(args).to(device)
-    elif (is_eval == False):
-        if (args.dilation_rate == 1):
-            model = PENet_C1_train(args).to(device)
-        elif (args.dilation_rate == 2):
-            model = PENet_C2_train(args).to(device)
-        elif (args.dilation_rate == 4):
-            model = PENet_C4(args).to(device)
-            penet_accelerated = True
-    else:
-        if (args.dilation_rate == 1):
-            model = PENet_C1(args).to(device)
-            penet_accelerated = True
-        elif (args.dilation_rate == 2):
-            model = PENet_C2(args).to(device)
-            penet_accelerated = True
-        elif (args.dilation_rate == 4):
-            model = PENet_C4(args).to(device)
-            penet_accelerated = True
-
-    if (penet_accelerated == True):
-        model.encoder3.requires_grad = False
-        model.encoder5.requires_grad = False
-        model.encoder7.requires_grad = False
-
-    model_named_params = None
-    model_bone_params = None
-    model_new_params = None
-    optimizer = None
-
-    if checkpoint is not None:
-        #print(checkpoint.keys())
-        if (args.freeze_backbone == True):
-            model.backbone.load_state_dict(checkpoint['model'])
-        else:
-            model.load_state_dict(checkpoint['model'], strict=False)
-        #optimizer.load_state_dict(checkpoint['optimizer'])
-        print("=> checkpoint state loaded.")
+    # if checkpoint is not None:
+    #     #print(checkpoint.keys())
+    #     if (args.freeze_backbone == True):
+    #         model.backbone.load_state_dict(checkpoint['model'])
+    #     else:
+    #         model.load_state_dict(checkpoint['model'], strict=False)
+    #     #optimizer.load_state_dict(checkpoint['optimizer'])
+    #     print("=> checkpoint state loaded.")
 
     logger = helper.logger(args)
-    if checkpoint is not None:
-        logger.best_result = checkpoint['best_result']
-        del checkpoint
+    # if checkpoint is not None:
+    #     logger.best_result = checkpoint['best_result']
+    #     del checkpoint
     print("=> logger created.")
-
-    test_dataset = None
-    test_loader = None
-    if (args.test):
-        test_dataset = KittiDepth('test_completion', args)
-        test_loader = torch.utils.data.DataLoader(
-            test_dataset,
-            batch_size=1,
-            shuffle=False,
-            num_workers=1,
-            pin_memory=True)
-        iterate("test_completion", args, test_loader, model, None, logger, 0)
-        return
-
+    
     val_dataset = KittiDepth('val', args)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -407,74 +403,168 @@ def main():
             p.requires_grad = False
 
         result, is_best = iterate("val", args, val_loader, model, None, logger,
-                              args.start_epoch - 1)
+                            args.start_epoch - 1)
         return
 
-    if (args.freeze_backbone == True):
-        for p in model.backbone.parameters():
-            p.requires_grad = False
-        model_named_params = [
-            p for _, p in model.named_parameters() if p.requires_grad
-        ]
-        optimizer = torch.optim.Adam(model_named_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
-    elif (args.network_model == 'pe'):
-        model_bone_params = [
-            p for _, p in model.backbone.named_parameters() if p.requires_grad
-        ]
-        model_new_params = [
-            p for _, p in model.named_parameters() if p.requires_grad
-        ]
-        model_new_params = list(set(model_new_params) - set(model_bone_params))
-        optimizer = torch.optim.Adam([{'params': model_bone_params, 'lr': args.lr / 10}, {'params': model_new_params}],
-                                     lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
-    else:
-        model_named_params = [
-            p for _, p in model.named_parameters() if p.requires_grad
-        ]
-        optimizer = torch.optim.Adam(model_named_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
-    print("completed.")
+    
+       
+            
+    for global_epoch in range(args.start_epoch,(args.epochs)+1):
+        print("Global epoch:",global_epoch)
+        users = random.sample(parts_idx, 10)
+        print("this round choose user:", users)
+        local_weights =[]
+        for user in users:
+            # modal lost controller
+            modal_lost = False
+            args.d_lost = False
+            args.rgb_lost = False
+            # user = 2  # debug only!
+            args.round = user
+            print("This is {} user-------------".format(args.round))
+            if user in range(1,11):  # 20 only lost depth
+                print("WARNING! Start simulate modal missing!")
+                modal_lost = True 
+                args.d_lost, args.rgb_lost = random_lost()
+                # args.d_lost = True
+                print("depth lost:{} rgb lost:{}".format(args.d_lost, args.rgb_lost))
+            else:
+                args.d_lost = False
+                args.rgb_lost = False
+            
+            # rebuild model every user
+            print("=> creating model and optimizer ... ", end='')
+            # model
+            model = None          
+            penet_accelerated = False
+            if (args.network_model == 'e'):
+                model = ENet(args).to(device)
+            elif (is_eval == False):
+                if (args.dilation_rate == 1):
+                    model = PENet_C1_train(args).to(device) 
+                elif (args.dilation_rate == 2):
+                    model = PENet_C2_train(args).to(device)
+                elif (args.dilation_rate == 4):
+                    model = PENet_C4(args).to(device)
+                    penet_accelerated = True
+            else:
+                if (args.dilation_rate == 1):
+                    model = PENet_C1(args).to(device)
+                    penet_accelerated = True
+                elif (args.dilation_rate == 2):
+                    model = PENet_C2(args).to(device)
+                    penet_accelerated = True
+                elif (args.dilation_rate == 4):
+                    model = PENet_C4(args).to(device)
+                    penet_accelerated = True
+            if (penet_accelerated == True):
+                model.encoder3.requires_grad = False
+                model.encoder5.requires_grad = False
+                model.encoder7.requires_grad = False
 
-    model = torch.nn.DataParallel(model)
+            model_named_params = None
+            model_bone_params = None
+            model_new_params = None
+            # optimizer
+            optimizer = None
+            if (args.freeze_backbone == True):
+                for p in model.backbone.parameters():
+                    p.requires_grad = False
+                model_named_params = [
+                    p for _, p in model.named_parameters() if p.requires_grad
+                ]
+                optimizer = torch.optim.Adam(model_named_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+            elif (args.network_model == 'pe'):
+                model_bone_params = [
+                    p for _, p in model.backbone.named_parameters() if p.requires_grad
+                ]
+                model_new_params = [
+                    p for _, p in model.named_parameters() if p.requires_grad
+                ]
+                model_new_params = list(set(model_new_params) - set(model_bone_params))
+                optimizer = torch.optim.Adam([{'params': model_bone_params, 'lr': args.lr / 10}, {'params': model_new_params}],
+                                            lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+            else:
+                model_named_params = [
+                    p for _, p in model.named_parameters() if p.requires_grad
+                ]
+                optimizer = torch.optim.Adam(model_named_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+            print("completed.")
+            
+            # Loading global weights before data parallel
+            if (len(global_weights) == 0):
+                print("global_weights is empty!")
+            else:
+                try:
+                    model.load_state_dict(global_weights)
+                    print("Global weights loaded successfully!")
+                except RuntimeError as e:
+                    print(f"Model Fail to Load: {e}")
+                
+            # data parallel
+            model = torch.nn.DataParallel(model) 
+            # Data loading code
+            print("=> creating data loaders ... ")
+            if not is_eval:
+                if modal_lost == True:
+                    print("Modal Missing!Dataset will be replaced by zero matrix in iterate()!!!!!!!!!!!!")
+                train_dataset = KittiDepth('train', args)
+                train_loader = torch.utils.data.DataLoader(train_dataset,
+                                                        batch_size=args.batch_size,
+                                                        shuffle=True,
+                                                        num_workers=args.workers,
+                                                        pin_memory=True,
+                                                        sampler=None)
+                # for i, batch_data in enumerate(train_loader):
+                #     for key, val in batch_data.items():
+                #         # print(key)
+                #         if key == 'rgb':
+                #             # print(type(val))
+                #             print(val.shape)
+                #             val = torch.zeros_like(val)
+                #             print(val.shape)
+                #             print(val)
+                            
+                print("\t==> train_loader size:{}".format(len(train_loader)))
+                
 
-    # Data loading code
-    print("=> creating data loaders ... ")
-    if not is_eval:
-        train_dataset = KittiDepth('train', args)
-        train_loader = torch.utils.data.DataLoader(train_dataset,
-                                                   batch_size=args.batch_size,
-                                                   shuffle=True,
-                                                   num_workers=args.workers,
-                                                   pin_memory=True,
-                                                   sampler=None)
-        print("\t==> train_loader size:{}".format(len(train_loader)))
+            print("=> starting main loop ...")
+            for epoch in range(1, 6):
+                print("=> starting training user {} epoch {} ..".format(user,epoch))
+                iterate("train", args, train_loader, model, optimizer, logger, global_epoch)  # train for one epoch
+                
+                for p in model.parameters():
+                    p.requires_grad = True
+                if (args.freeze_backbone == True):
+                    for p in model.module.backbone.parameters():
+                        p.requires_grad = False
+                if (penet_accelerated == True):
+                    model.module.encoder3.requires_grad = False
+                    model.module.encoder5.requires_grad = False
+                    model.module.encoder7.requires_grad = False
+            local_weights.append(copy.deepcopy(model.module.state_dict()))
+            # ### emergency to save round 10 user parameter
+            # checkpoint_filename = os.path.join(logger.output_directory,
+            #                            'checkpoint-user' + str(user) + '.pth.tar')
+            # torch.save(model.module.state_dict(), checkpoint_filename)
+            assert copy.deepcopy(model.module.state_dict()), "local_weights MISSING!!! Check CODE!!!!!"
+            print("local_weights saved! :D)")
 
-    print("=> starting main loop ...")
-    for epoch in range(args.start_epoch, args.epochs):
-        print("=> starting training epoch {} ..".format(epoch))
-        iterate("train", args, train_loader, model, optimizer, logger, epoch)  # train for one epoch
-
+        global_weights =average_weight(local_weights)
+        
+        # model.load_state_dict(global_weights)  ###
         # validation memory reset
         for p in model.parameters():
             p.requires_grad = False
-        result, is_best = iterate("val", args, val_loader, model, None, logger, epoch)  # evaluate on validation set
-
-        for p in model.parameters():
-            p.requires_grad = True
-        if (args.freeze_backbone == True):
-            for p in model.module.backbone.parameters():
-                p.requires_grad = False
-        if (penet_accelerated == True):
-            model.module.encoder3.requires_grad = False
-            model.module.encoder5.requires_grad = False
-            model.module.encoder7.requires_grad = False
-
+        result, is_best = iterate("val", args, val_loader, model, None, logger, global_epoch)  # evaluate on validation set
         helper.save_checkpoint({ # save checkpoint
-            'epoch': epoch,
+            'epoch': global_epoch,
             'model': model.module.state_dict(),
             'best_result': logger.best_result,
-            'optimizer' : optimizer.state_dict(),
+            #'optimizer' : optimizer.state_dict(),
             'args' : args,
-        }, is_best, epoch, logger.output_directory)
+        }, is_best, global_epoch, logger.output_directory)
+        print("Global weights: global epoch {} Saved!".format(global_epoch))
 
 
 if __name__ == '__main__':

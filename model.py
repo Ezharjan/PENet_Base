@@ -1,4 +1,5 @@
 from basic import *
+from collections import OrderedDict
 
 class ENet(nn.Module):
     def __init__(self, args):
@@ -232,6 +233,34 @@ class ENet(nn.Module):
         elif (self.args.dilation_rate == 4):
             return torch.cat((rgb_feature0_plus, decoder_feature5), 1), torch.cat((rgb_feature2_plus, decoder_feature4),1),\
                    torch.cat((rgb_feature4_plus, decoder_feature3), 1), output
+                   
+    # def extract_subnetwork(self, start_layer_names, end_layer_names):
+    #     layers = OrderedDict()
+    #     start_found = {name: False for name in start_layer_names}
+        
+    #     def recurse_layers(module, parent_name=''):
+    #         nonlocal start_found
+    #         for name, layer in module.named_children():
+    #             full_name = f"{parent_name}.{name}" if parent_name else name
+    #             class_name = layer.__class__.__name__
+    #             if full_name in start_layer_names:
+    #                 start_found[full_name] = True
+    #             if any(start_found.values()):
+    #                 layers[class_name] = layer # add layer to the oderdict
+    #             if full_name in end_layer_names:
+    #                 return layers
+    #             if isinstance(layer, nn.Sequential) or isinstance(layer, nn.Module):
+    #                 recurse_layers(layer, full_name)
+        
+    #     recurse_layers(self)
+        
+    #     if not all(start_found.values()):
+    #         missing_layers = [name for name, found in start_found.items() if not found]
+    #         raise ValueError(f"~~~Layers {missing_layers} not found!!")
+    #     subnetwork = nn.Sequential(layers)
+        
+    #     return subnetwork
+        
 
 class PENet_C1(nn.Module):
     def __init__(self, args):

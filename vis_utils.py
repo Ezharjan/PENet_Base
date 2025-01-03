@@ -99,7 +99,8 @@ def save_image_torch(rgb, filename):
 
 def save_depth_as_uint16png(img, filename):
     #from tensor
-    img = np.squeeze(img.data.cpu().numpy())
+    # img = np.squeeze(img.data.cpu().numpy())
+    img = np.squeeze(img.data.numpy())
     img = (img * 256).astype('uint16')
     cv2.imwrite(filename, img)
 
