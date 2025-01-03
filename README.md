@@ -1,3 +1,19 @@
+# PENet_Base
+
+Store here are some experiments based on the [PENet_ICRA2021](https://github.com/JUGGHM/PENet_ICRA2021) original code.
+
+<br>
+<br>
+<br>
+
+---
+---
+
+
+original: ICRA 2021 "Towards Precise and Efficient Image Guided Depth Completion"
+
+
+
 ## Important: About Improper Inference Time Statistics
 The model's inference time is not properly reported in the original paper. This is because the original code ignores CUDA's asynchronous execution on CPU and GPU. To measure the inference time more precisely, the processes should be synchronized before recording current time:
 ```
