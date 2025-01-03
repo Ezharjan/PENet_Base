@@ -1,6 +1,6 @@
 # PENet_Base
 
-Store here are some extra experiments based on the source code of [PENet_ICRA2021](https://github.com/JUGGHM/PENet_ICRA2021).
+Stores here are some extra experiments based on the source code of [PENet_ICRA2021](https://github.com/JUGGHM/PENet_ICRA2021).
 
 <br>
 <br>
