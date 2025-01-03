@@ -566,7 +566,7 @@ class KittiDepth(data.Dataset):
         self.epoch = epoch
 
     def __getraw__(self, index):
-        modal_missing_rate = 0.5      # here!!!!!!!!!!!!!!!!!!!
+        modal_missing_rate = 0.5      # TODO: Change the MISSING_RATE everytime here!!!
         if random.random() < modal_missing_rate:
             modal_missing = True
         else:
