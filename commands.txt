@@ -1,0 +1,23 @@
+CUDA_VISIBLE_DEVICES="0"  python main.py -n sem_att -e ./model_best_backup.pth.tar --data-folder ./data_depth_selection --val_results "val_results/"
+
+# train backbone
+python main.py -n bb -b 8 --data-folder [path of depth folder inside kitti_depth e.g. kitti_depth/depth/] --data-folder-rgb [path of rgb images e.g. kitti_raw/] --data-semantic [path of semantic maps e.g. semantic_maps/] --patience 4   
+
+python main.py -n bb -b 4 --data-folder ./kitti_depth/depth/ --data-folder-rgb ./kitti_raw/ --data-semantic ./semantic_maps/ --patience 4  
+
+
+
+
+# train semattnet
+p1
+
+python main.py -n sem_att -b 8 --data-folder [path of depth folder inside kitti_depth e.g. kitti_depth/depth/] --data-folder-rgb [path of rgb images e.g. kitti_raw/] --data-semantic [path of semantic maps e.g. semantic_maps/] --patience 8 -f --resume [path of pretrained three-branch backbone]
+
+
+p2
+
+python main.py -n sem_att -b 16 --lr 0.025298 --data-folder [path of depth folder inside kitti_depth e.g. kitti_depth/depth/] --data-folder-rgb [path of rgb images e.g. kitti_raw/] --data-semantic [path of semantic maps e.g. semantic_maps/] --patience 8 --resume [path of initialized CSPN++ model]
+
+p3
+
+python main.py -n sem_att -b 16 --lr 0.025298 --data-folder [path of depth folder inside kitti_depth e.g. kitti_depth/depth/] --data-folder-rgb [path of rgb images e.g. kitti_raw/] --data-semantic [path of semantic maps e.g. semantic_maps/] --patience 3 --resume [path of pre-trained SemAttNet model (till epoch = 71)]

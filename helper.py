@@ -30,19 +30,19 @@ class logger:
         self.best_txt = os.path.join(output_directory, 'best.txt')
 
         # backup the source code
-        if args.resume == '':
-            print("=> creating source code backup ...")
-            backup_directory = os.path.join(output_directory, "code_backup")
-            self.backup_directory = backup_directory
-            backup_source_code(backup_directory)
-            # create new csv files with only header
-            with open(self.train_csv, 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-            with open(self.val_csv, 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-            print("=> finished creating source code backup.")
+        # if args.resume == '':
+        #     print("=> creating source code backup ...")
+        #     backup_directory = os.path.join(output_directory, "code_backup")
+        #     self.backup_directory = backup_directory
+        #     backup_source_code(backup_directory)
+        #     # create new csv files with only header
+        #     with open(self.train_csv, 'w') as csvfile:
+        #         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        #         writer.writeheader()
+        #     with open(self.val_csv, 'w') as csvfile:
+        #         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        #         writer.writeheader()
+        #     print("=> finished creating source code backup.")
 
     def conditional_print(self, split, i, epoch, lr, n_set, blk_avg_meter,
                           avg_meter):
@@ -249,20 +249,20 @@ def save_checkpoint(state, is_best, epoch, output_directory):
     if is_best:
         best_filename = os.path.join(output_directory, 'model_best.pth.tar')
         shutil.copyfile(checkpoint_filename, best_filename)
-    if epoch > 0:
-        prev_checkpoint_filename = os.path.join(
-            output_directory, 'checkpoint-' + str(epoch - 1) + '.pth.tar')
-        if os.path.exists(prev_checkpoint_filename):
-            os.remove(prev_checkpoint_filename)
+    # if epoch > 0:
+    #     prev_checkpoint_filename = os.path.join(
+    #         output_directory, 'checkpoint-' + str(epoch - 1) + '.pth.tar')
+    #     if os.path.exists(prev_checkpoint_filename):
+    #         os.remove(prev_checkpoint_filename)
 
 
 def get_folder_name(args):
     current_time = time.strftime('%Y-%m-%d@%H-%M')
     return os.path.join(args.result,
-        'input={}.criterion={}.lr={}.bs={}.wd={}.jitter={}.time={}'.
+        'input={}.criterion={}.lr={}.bs={}.round={}.time={}'.
         format(args.input, args.criterion, \
-            args.lr, args.batch_size, args.weight_decay, \
-            args.jitter, current_time
+            args.lr, args.batch_size, \
+            args.round,current_time
             ))
 
 
